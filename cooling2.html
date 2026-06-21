@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Визуализация ламинарного охлаждения (Стан 2000)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #1a202c; color: #e2e8f0; font-family: sans-serif; overflow: hidden; }
+        canvas { background-color: #2d3748; border-radius: 0.5rem; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .slider-container { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+        input[type=range] { width: 60%; }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col items-center justify-center p-4">
+
+    <div class="text-center mb-4">
+        <h1 class="text-2xl font-bold text-blue-400">АСУ ТП: Комплекс ламинарного охлаждения</h1>
+        <p class="text-sm text-gray-400">Интерактивная модель теплообмена горячекатаной полосы</p>
+    </div>
+
+    <div class="flex w-full max-w-6xl gap-6">
+        <!-- Панель управления -->
+        <div class="w-1/3 bg-gray-800 p-6 rounded-lg shadow-lg flex flex-col justify-center">
+            <h2 class="text-xl font-semibold mb-6 border-b border-gray-600 pb-2">Управление процессом</h2>
+            
+            <div class="slider-container">
+                <label>Скорость стана: <span id="speedVal" class="font-bold text-yellow-400">10</span> м/с</label>
+                <input type="range" id="speedSlider" min="2" max="15" step="0.5" value="10">
+            </div>
+            
+            <div class="slider-container">
+                <label>Расход воды (УЛО): <span id="waterVal" class="font-bold text-blue-400">100</span> %</label>
+                <input type="range" id="waterSlider" min="0" max="100" value="100">
+            </div>
+
+            <div class="mt-8 p-4 bg-gray-900 rounded border border-gray-700">
+                <h3 class="text-sm text-gray-400 mb-2">Телеметрия:</h3>
+                <p>Т-ра на входе: <span class="font-mono text-red-500">860 °C</span></p>
+                <p>Т-ра смотки (факт): <span id="outTemp" class="font-mono text-green-400 text-xl font-bold">--- °C</span></p>
+                <p class="text-xs text-gray-500 mt-2">Целевая: 620 °C (±10 °C)</p>
+            </div>
+        </div>
+
+        <!-- Холст симуляции -->
+        <div class="w-2/3 flex justify-center">
+            <canvas id="simCanvas" width="800" height="400"></canvas>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function() {
+            const canvas = document.getElementById('simCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            // UI Elements
+            const speedSlider = document.getElementById('speedSlider');
+            const waterSlider = document.getElementById('waterSlider');
+            const speedVal = document.getElementById('speedVal');
+            const waterVal = document.getElementById('waterVal');
+            const outTempText = document.getElementById('outTemp');
+
+            // Simulation parameters
+            let stripSpeed = parseFloat(speedSlider.value);
+            let waterFlow = parseFloat(waterSlider.value) / 100;
+            const T_IN = 860;
+            const AMBIENT = 30;
+            
+            // UI Listeners
+            speedSlider.oninput = (e) => {
+                stripSpeed = parseFloat(e.target.value);
+                speedVal.innerText = stripSpeed.toFixed(1);
+            };
+            waterSlider.oninput = (e) => {
+                waterFlow = parseFloat(e.target.value) / 100;
+                waterVal.innerText = e.target.value;
+            };
+
+            // Convert Temp to Color (Yellow/White -> Red -> Dark Grey)
+            function getTempColor(temp) {
+                if (temp >= 850) return '#ffffee';
+                if (temp >= 800) return '#ffcc00';
+                if (temp >= 700) return '#ff6600';
+                if (temp >= 600) return '#cc0000';
+                if (temp >= 500) return '#880000';
+                return '#444444';
+            }
+
+            // Strip segments
+            const segments = [];
+            const segWidth = 5;
+            for(let i=0; i<800/segWidth; i++) {
+                segments.push({ x: i*segWidth, temp: T_IN });
+            }
+
+            // Cooling Zones (Start X, End X)
+            const zones = [
+                { start: 200, end: 350 },
+                { start: 400, end: 550 },
+                { start: 600, end: 700 }
+            ];
+
+            // Water particles
+            let particles = [];
+
+            function update() {
+                // Move segments
+                const pxSpeed = stripSpeed * 0.5; // Scale speed for canvas
+                
+                for (let i = segments.length - 1; i >= 0; i--) {
+                    segments[i].x += pxSpeed;
+                }
+
+                // Add new segments at inlet
+                while (segments[0].x > 0) {
+                    segments.unshift({ x: segments[0].x - segWidth, temp: T_IN });
+                }
+
+                // Remove segments out of bounds
+                while (segments[segments.length - 1].x > canvas.width) {
+                    segments.pop();
+                }
+
+                // Apply cooling
+                let finalTemp = T_IN;
+                for (let seg of segments) {
+                    let coolingRate = 0.05; // Air cooling (Radiation/Convection)
+                    
+                    // Check if under water zone
+                    let underWater = false;
+                    for (let z of zones) {
+                        if (seg.x >= z.start && seg.x <= z.end) {
+                            underWater = true;
+                            break;
+                        }
+                    }
+
+                    if (underWater) {
+                        // Water cooling based on flow rate and inverse speed (slower = more time under water)
+                        coolingRate += (2.5 * waterFlow) / (stripSpeed * 0.1); 
+                    }
+
+                    seg.temp -= coolingRate;
+                    if (seg.temp < AMBIENT) seg.temp = AMBIENT;
+                    
+                    if (seg.x >= 750 && seg.x < 750 + pxSpeed) {
+                        finalTemp = seg.temp;
+                    }
+                }
+
+                // Update UI text smoothly
+                const currentTxt = parseFloat(outTempText.innerText) || 860;
+                const displayTemp = currentTxt + (finalTemp - currentTxt) * 0.1;
+                outTempText.innerText = Math.round(displayTemp) + " °C";
+                
+                if(Math.round(displayTemp) >= 610 && Math.round(displayTemp) <= 630) {
+                    outTempText.className = "font-mono text-green-400 text-xl font-bold";
+                } else if (Math.round(displayTemp) > 630) {
+                    outTempText.className = "font-mono text-red-500 text-xl font-bold"; // Too hot
+                } else {
+                    outTempText.className = "font-mono text-blue-400 text-xl font-bold"; // Too cold
+                }
+
+                // Manage water particles
+                if (waterFlow > 0) {
+                    for (let z of zones) {
+                        if (Math.random() < waterFlow * 0.5) {
+                            particles.push({
+                                x: z.start + Math.random() * (z.end - z.start),
+                                y: 80,
+                                vy: 5 + Math.random() * 3
+                            });
+                        }
+                    }
+                }
+
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    particles[i].y += particles[i].vy;
+                    if (particles[i].y > 200) { // Hit the strip
+                        particles.splice(i, 1);
+                    }
+                }
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Draw Rollers
+                ctx.fillStyle = '#4a5568';
+                for(let i=10; i<800; i+=40) {
+                    ctx.beginPath();
+                    ctx.arc(i, 230, 15, 0, Math.PI*2);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+
+                // Draw Strip
+                for (let i = 0; i < segments.length - 1; i++) {
+                    let seg = segments[i];
+                    let nextSeg = segments[i+1];
+                    
+                    // Create gradient for smooth color transition
+                    let grad = ctx.createLinearGradient(seg.x, 0, nextSeg.x, 0);
+                    grad.addColorStop(0, getTempColor(seg.temp));
+                    grad.addColorStop(1, getTempColor(nextSeg.temp));
+                    
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(seg.x, 200, nextSeg.x - seg.x + 1, 15);
+                }
+
+                // Draw Water Pipes & Nozzles
+                ctx.fillStyle = '#718096';
+                for (let z of zones) {
+                    ctx.fillRect(z.start, 60, z.end - z.start, 20); // Header
+                    for(let nx=z.start+10; nx<z.end; nx+=20) {
+                        ctx.fillRect(nx, 80, 5, 10); // Nozzles
+                    }
+                }
+
+                // Draw Water Particles
+                ctx.fillStyle = 'rgba(66, 153, 225, 0.6)';
+                for (let p of particles) {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 2, 0, Math.PI*2);
+                    ctx.fill();
+                }
+
+                // Draw Pyrometers (Sensors)
+                ctx.fillStyle = '#f6e05e';
+                ctx.fillRect(50, 150, 10, 20); // Inlet
+                ctx.fillRect(750, 150, 10, 20); // Outlet
+                ctx.fillStyle = '#fff';
+                ctx.font = '12px sans-serif';
+                ctx.fillText('Пирометр 1', 25, 140);
+                ctx.fillText('Пирометр 2', 725, 140);
+            }
+
+            function loop() {
+                update();
+                draw();
+                requestAnimationFrame(loop);
+            }
+
+            loop();
+        }
+    </script>
+</body>
+</html>
